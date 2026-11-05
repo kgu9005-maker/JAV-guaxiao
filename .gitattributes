@@ -1,0 +1,4 @@
+整理视频.bat
+text eol=crlf
+*.py text
+README.md text
