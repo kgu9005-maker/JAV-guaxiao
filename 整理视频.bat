@@ -1,6 +1,8 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
+rem ===== UTF-8 console: Chinese messages from the python script stay readable =====
+chcp 65001 >nul 2>nul
 
 set "PY="
 where python >nul 2>nul && set "PY=python"
@@ -13,7 +15,7 @@ if not defined PY (
 
 echo ============================================
 echo  Video Organizer
-echo  Folder: %cd%
+echo  Bat folder: %cd%
 echo ============================================
 echo.
 
@@ -23,6 +25,7 @@ rem 6 = 明显更快，javbus 一般还扛得住
 rem 8 = 激进，容易被反爬，出现大批失败就退回 4~6
 rem 想临时试别的值：直接改下面这个 4；或者命令行传第二个参数
 if not defined JAV_WORKERS set "JAV_WORKERS=4"
+if not "%~2"=="" set "JAV_WORKERS=%~2"
 echo [workers] %JAV_WORKERS% lanes
 echo.
 
@@ -55,19 +58,6 @@ if defined JAV_PROXY (
 )
 echo.
 
-rem ===== Target folder: drag-and-drop argument, or the bat's own folder =====
-set "TARGET=%~1"
-if not defined TARGET set "TARGET=%~dp0."
-set "TARGET=%TARGET:"=%"
-if "%TARGET:~-1%"=="\" set "TARGET=%TARGET:~0,-1%"
-if not exist "%TARGET%\" (
-    echo [ERROR] Target folder not found: %TARGET%
-    pause
-    exit /b 1
-)
-echo Target: %TARGET%
-echo.
-
 rem ===== Locate jav_organizer.py: next to bat first, else scan Y:/ =====
 set "SCRIPT="
 if exist "%~dp0jav_organizer.py" set "SCRIPT=%~dp0jav_organizer.py"
@@ -93,7 +83,61 @@ if errorlevel 1 (
     %PY% -m pip install pillow -q -i https://pypi.tuna.tsinghua.edu.cn/simple
 )
 
+rem ===== Target folder =====
+rem 1) drag a folder onto this bat / pass it as the 1st CLI argument -> use it directly
+rem 2) just double-click (no argument) -> open a folder picker dialog, then run
+rem    (remembers the last selected folder, so the picker starts there next time)
+set "TARGET=%~1"
+if defined TARGET goto RUN
+
+where powershell >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] PowerShell not found. Drag a folder onto this bat instead.
+    pause
+    exit /b 1
+)
+echo.
+echo No folder given - opening the folder picker ...
+echo Select the folder that contains the videos, then click OK.
+echo.
+
+set "JAV_START=%~dp0"
+set "JAV_SCRIPT=%SCRIPT%"
+set "JAV_PY_EXE=python"
+set "JAV_PY_PRE="
+if "%PY%"=="py -3" (
+    set "JAV_PY_EXE=py"
+    set "JAV_PY_PRE=-3"
+)
+
+rem The one-liner below: show a WinForms folder dialog (no cmd codepage issues,
+rem all non-ASCII paths travel through env vars / Unicode argv), then launch the
+rem organizer with the chosen folder. Cancel => exit code 2, nothing is touched.
+powershell.exe -NoProfile -STA -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description='Select the folder containing the videos'; $d.ShowNewFolderButton=$false; $last=Join-Path $env:TEMP 'jav_organizer_last_target.txt'; $prev=''; if(Test-Path $last){ $prev=([IO.File]::ReadAllText($last,[Text.Encoding]::UTF8)).Trim() }; if($prev -and (Test-Path -LiteralPath $prev)){ $d.SelectedPath=$prev } else { $d.SelectedPath=$env:JAV_START }; if($d.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){ Write-Host 'Cancelled - nothing was changed.'; exit 2 }; $p=$d.SelectedPath; [IO.File]::WriteAllText($last,$p,[Text.Encoding]::UTF8); Write-Host ('Target: ' + $p); if($env:JAV_PY_PRE){ & $env:JAV_PY_EXE $env:JAV_PY_PRE $env:JAV_SCRIPT $p $env:JAV_WORKERS } else { & $env:JAV_PY_EXE $env:JAV_SCRIPT $p $env:JAV_WORKERS }; exit $LASTEXITCODE"
+if errorlevel 2 (
+    echo.
+    echo Cancelled. No files were changed.
+    goto END
+)
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Organizer exited with an error. See messages above.
+)
+goto END
+
+:RUN
+set "TARGET=%TARGET:"=%"
+if "%TARGET:~-1%"=="\" set "TARGET=%TARGET:~0,-1%"
+if not exist "%TARGET%\" (
+    echo [ERROR] Target folder not found: %TARGET%
+    pause
+    exit /b 1
+)
+echo Target: %TARGET%
+echo.
 %PY% "%SCRIPT%" "%TARGET%" %JAV_WORKERS%
+
+:END
 echo.
 echo Finished. You can close this window.
 pause
