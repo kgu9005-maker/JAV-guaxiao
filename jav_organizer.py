@@ -6,7 +6,7 @@
 - FC2:    fc2ppvdb -> FC2官网 -> javten(FC2hub) -> javbus 无码区
 - 欧美:   ThePornDB API(可选,需Key) -> IAFD（自动识别 Brazzers 日期式命名等）
 - 生成 Kodi/Plex 兼容的 movie.nfo + 竖版 poster.jpg + fanart.jpg + 演员头像
-- 按番号建文件夹，视频与刮削文件剪切进去
+- 按番号建文件夹，名字后追加分辨率（1080p / 2K / 4K / 8K，用 ffprobe 读取真实分辨率）
 - 成功的番号文件夹移入「完成」，失败的移入「失败」
 
 用法: python jav_organizer.py [目标文件夹]
@@ -19,6 +19,7 @@ import time
 import random
 import hashlib
 import shutil
+import subprocess
 import ssl
 import threading
 import urllib.request
@@ -40,6 +41,18 @@ MAX_SAMPLES = 4      # 每个视频下载的预览图数量（0 = 关闭）
 MAX_ACTORS = 4       # 每部最多抓几个演员头像
 MIN_IMAGE = 5000     # 小于此字节数的图片视为占位图，丢弃
 BASE = "https://www.javbus.com"
+
+# ---- 命名规则：番号后追加分辨率 ----
+# 结果示例：ABP-123 1080p / ABP-123 2K / ABP-123 4K
+# 默认开启；在 bat 里设 JAV_APPEND_RES=0 可关闭
+APPEND_RESOLUTION = os.environ.get("JAV_APPEND_RES", "1").strip() != "0"
+# 后缀写法，改这里即可换风格：
+#   " {res}"     -> ABP-123 1080p      （默认）
+#   " [{res}]"   -> ABP-123 [1080p]
+#   "-{res}"     -> ABP-123-1080p
+RES_TAG_FORMAT = " {res}"
+# 分辨率识别不出来时用什么；留空 = 不加后缀（也可写 "未知"）
+RES_UNKNOWN = ""
 
 # 已知占位图黑名单（MD5）：FC2「注意」防病毒公告图（下架商品页的 og:image）
 PLACEHOLDER_MD5 = {"c62f9de3327e43b852b39364677b5daa"}
@@ -1407,6 +1420,70 @@ def _code_lock(code):
         return lk
 
 
+# ============ 分辨率识别 + 命名后缀 ============
+# 优先用 ffprobe 读视频真实分辨率；没有 ffprobe 时退回文件名里的标签
+_RES_FROM_NAME = re.compile(
+    r"(?<!\d)(4320p|8k|2160p|4k|uhd|1440p|2k|qhd|1920x1080|1080p|fhd|"
+    r"1280x720|720p|480p|sd)(?!\d)", re.I)
+_RES_ALIAS = {
+    "4320p": "8K", "8k": "8K",
+    "2160p": "4K", "4k": "4K", "uhd": "4K",
+    "1440p": "2K", "2k": "2K", "qhd": "2K",
+    "1920x1080": "1080p", "1080p": "1080p", "fhd": "1080p",
+    "1280x720": "720p", "720p": "720p",
+    "480p": "480p", "sd": "480p",
+}
+
+
+def _res_label(w, h):
+    """按宽/高映射到 480p / 720p / 1080p / 2K / 4K / 8K"""
+    if not w or not h:
+        return ""
+    if w >= 7680 or h >= 4320:
+        return "8K"
+    if w >= 3840 or h >= 2160:
+        return "4K"
+    if w >= 2560 or h >= 1440:
+        return "2K"
+    if w >= 1920 or h >= 1080:
+        return "1080p"
+    if w >= 1280 or h >= 720:
+        return "720p"
+    return "480p"
+
+
+def detect_resolution(fname, workdir):
+    """返回 '1080p' / '2K' / '4K' 等；识别不到返回 RES_UNKNOWN"""
+    if not APPEND_RESOLUTION:
+        return ""
+    path = os.path.join(workdir, fname)
+    # 1) ffprobe 读真实分辨率（最准）
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0:s=x", path],
+            stderr=subprocess.DEVNULL, timeout=20, text=True).strip()
+        m = re.search(r"(\d{3,5})x(\d{3,5})", out)
+        if m:
+            label = _res_label(int(m.group(1)), int(m.group(2)))
+            if label:
+                return label
+    except Exception:
+        pass
+    # 2) 文件名标签兜底（如 xxx_4K.mp4 / xxx-1080p.mkv）
+    m = _RES_FROM_NAME.search(os.path.splitext(fname)[0])
+    if m:
+        return _RES_ALIAS.get(m.group(1).lower(), "")
+    return RES_UNKNOWN
+
+
+def res_suffix(fname, workdir):
+    """生成要追加到名字后面的后缀，例如 ' 4K'"""
+    res = detect_resolution(fname, workdir)
+    return RES_TAG_FORMAT.format(res=res) if res else ""
+
+
 def process_video(fname, workdir, done_dir, fail_dir, idx, total):
     t0 = time.time()
     src = os.path.join(workdir, fname)
@@ -1421,15 +1498,19 @@ def process_video(fname, workdir, done_dir, fail_dir, idx, total):
         return "fail"
 
     part = extract_part(fname)
+    suffix = res_suffix(fname, workdir)
     for c in codes:
-        d = os.path.join(done_dir, c)
-        if not os.path.isdir(d):
-            continue
-        low = [x.lower() for x in os.listdir(d)]
-        has_video = any(os.path.splitext(x)[1] in VIDEO_EXTS for x in low)
-        if f"{c}{part}{ext}".lower() in low or (has_video and not part):
-            log(f"{tag}\n  ↷ 已归档过 完成/{c}，跳过")
-            return "skip"
+        # 兼容旧命名（无分辨率后缀）和新命名，避免重复刮削
+        for d in (os.path.join(done_dir, c), os.path.join(done_dir, c + suffix)):
+            if not os.path.isdir(d):
+                continue
+            low = [x.lower() for x in os.listdir(d)]
+            has_video = any(os.path.splitext(x)[1] in VIDEO_EXTS for x in low)
+            if (f"{c}{part}{ext}".lower() in low
+                    or f"{c}{part}{suffix}{ext}".lower() in low
+                    or (has_video and not part)):
+                log(f"{tag}\n  ↷ 已归档过 完成/{os.path.basename(d)}，跳过")
+                return "skip"
 
     result = scrape(codes, western)
     if not result:
@@ -1442,7 +1523,7 @@ def process_video(fname, workdir, done_dir, fail_dir, idx, total):
     with _code_lock(final_id):
         try:
             return _write_outputs(meta, final_id, fname, src, ext, workdir,
-                                  done_dir, western, tag, t0)
+                                  done_dir, western, tag, t0, suffix)
         except Exception as e:
             log(f"{tag}\n  ✗ 写文件异常: {e}")
             try:
@@ -1453,10 +1534,10 @@ def process_video(fname, workdir, done_dir, fail_dir, idx, total):
 
 
 def _write_outputs(meta, final_id, fname, src, ext, workdir, done_dir,
-                   western, tag, t0):
+                   western, tag, t0, suffix=""):
     part = extract_part(fname)
-    new_stem = f"{final_id}{part}"
-    folder = os.path.join(workdir, final_id)
+    new_stem = f"{final_id}{part}{suffix}"
+    folder = os.path.join(workdir, f"{final_id}{suffix}")
     os.makedirs(folder, exist_ok=True)   # 直接在番号文件夹内下载，避免多线程临时文件冲突
 
     with open(os.path.join(folder, f"{new_stem}.nfo"), "w", encoding="utf-8") as f:
@@ -1559,7 +1640,7 @@ def _write_outputs(meta, final_id, fname, src, ext, workdir, done_dir,
                 pass
 
     # 番号文件夹移入「完成」（若已存在则合并进去，兼容 CD1/CD2）
-    target_dir = os.path.join(done_dir, final_id)
+    target_dir = os.path.join(done_dir, f"{final_id}{suffix}")
     if os.path.isdir(target_dir):
         for item in os.listdir(folder):
             src_p = os.path.join(folder, item)
@@ -1579,7 +1660,7 @@ def _write_outputs(meta, final_id, fname, src, ext, workdir, done_dir,
     else:
         shutil.move(folder, target_dir)
 
-    log(f"{tag}\n  ✓ {final_id} | {(meta.get('title') or '')[:30]} "
+    log(f"{tag}\n  ✓ {final_id}{suffix} | {(meta.get('title') or '')[:30]} "
         f"| {ok_count} 图 | {time.time()-t0:.1f}s")
     return "ok"
 

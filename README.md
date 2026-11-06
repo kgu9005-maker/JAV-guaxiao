@@ -8,6 +8,7 @@
 - **FC2 无码**：fc2ppvdb → FC2 官网 → javten(FC2hub) → njavtv → 123av → javbus 无码区，多源链式兜底
 - **欧美**：ThePornDB API（可选，需 Key）→ IAFD 免登录兜底（自动识别 Brazzers / Blacked / Vixen 等日期式命名）
 - **生成媒体库文件**：`movie.nfo` + 竖版 `poster.jpg` + `fanart.jpg` + 演员头像（需 Pillow，自动安装）
+- **分辨率命名**：文件夹和视频文件名自动追加 `1080p` / `2K` / `4K` / `8K`，如 `ABP-123 1080p/`
 - **自动归档**：按番号建文件夹，视频与刮削文件剪切进去
   - 成功 → 目标文件夹下的 `完成/`
   - 失败 → 目标文件夹下的 `失败/`（可重复跑，只处理剩余视频）
@@ -17,6 +18,7 @@
 - Windows 10/11
 - Python 3.8+（安装时勾选 **Add Python to PATH**）
 - 可选：Pillow（首次运行 bat 会自动通过清华镜像安装，用于生成竖版海报）
+- 可选：**ffprobe**（ffmpeg 自带），用于读取视频真实分辨率；没装也能用，会自动退回从文件名识别 `4K` / `1080p` 等标签
 
 ## 使用方法
 
@@ -48,6 +50,35 @@
 
 临时修改：编辑 bat 里的 `JAV_WORKERS=4`，或用命令行第二个参数。
 
+## 命名规则（分辨率后缀）
+
+整理后文件夹、视频和 `.nfo` 会变成：
+
+```text
+完成/ABP-123 1080p/
+完成/ABP-123 1080p/ABP-123 1080p.mp4
+完成/ABP-123 1080p/ABP-123 1080p.nfo
+完成/ABP-123 1080p/poster.jpg
+完成/ABP-123 1080p/fanart.jpg
+```
+
+分辨率标签按视频实际宽高映射：
+
+| 实际分辨率 | 标签 |
+|---|---|
+| ≥3840×2160 | `4K` |
+| ≥2560×1440 | `2K` |
+| ≥1920×1080 | `1080p` |
+| ≥1280×720 | `720p` |
+| 更小 | `480p` |
+| ≥7680×4320 | `8K` |
+
+- 优先用 **ffprobe** 读真实分辨率；没有 ffprobe 或读取失败时，自动识别文件名里的 `4K` / `2160p` / `UHD` / `2K` / `1440p` / `1080p` / `FHD` / `720p` 等标签
+- 两个都识别不出来时**不加后缀**，不会生成「未知」这种名字
+- **关闭**：编辑 bat，把 `JAV_APPEND_RES=1` 改成 `0`（或用命令行 `set JAV_APPEND_RES=0` 后再运行），恢复纯番号命名
+- **改后缀风格**：编辑 `jav_organizer.py` 顶部的 `RES_TAG_FORMAT`，例如 `" [{res}]"` → `ABP-123 [1080p]`，`"-{res}"` → `ABP-123-1080p`
+- 同一番号的不同清晰度会分到不同文件夹；重复运行时已归档的会被正确跳过（兼容旧的纯番号文件夹）
+
 ## 代理设置（FC2 必看）
 
 fc2ppvdb / FC2 官网在国内直连不通，需要走代理。bat 会**自动探测**本机常见代理端口（7897 / 7890 / 7891 / 10809 / 10808 / 1080 / 8888），检测到就直接用。
@@ -63,6 +94,7 @@ set "JAV_PROXY=http://127.0.0.1:7897"
 ## 可选高级配置（编辑 jav_organizer.py 顶部）
 
 - `ENABLE_WESTERN = True`：开启欧美片刮削
+- `RES_TAG_FORMAT = " {res}"`：分辨率后缀写法；`RES_UNKNOWN` 可设为 `"未知"` 让识别不出时也加后缀
 - `TPDB_API_KEY`：填 [theporndb.net](https://theporndb.net) 的免费 Read Access Token，欧美和 FC2 命中率、封面质量大幅提升
 - `JAVTEN_COOKIE` / `JAVTEN_UA`：javten 被 Cloudflare 拦时，浏览器过盾后按脚本内注释复制 Cookie 和 UA 注入（cf_clearance 绑定 IP 和 UA）
 
